@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 class RemoraOptimizationAlgorithm:
     """
     Remora Optimization Algorithm (ROA) - Jia et al. (2021).
-    Menggantikan Puma Optimizer dengan konsistensi parameter:
+    Algoritma Metaheuristik Remora Optimization Algorithm (ROA) dengan parameter konsisten:
     N = 150, Max Iter = 200, Bounds = [-1.0, 1.0], Seed = 67.
     """
     def __init__(self, cost_function, dim, n_agents=150, max_iter=200,
@@ -380,68 +380,211 @@ def run_comparative_pipeline(ticker):
 # 6. VISUALIZATION & EXPORT
 # ==============================================================================
 def generate_comparative_plots(results_compare, tickers):
+    """
+    Menghasilkan 4 set grafik visualisasi komparatif beresolusi tinggi (200 DPI)
+    yang dirancang khusus agar mudah dipresentasikan dalam sidang/seminar akademik:
+    1. Executive Performance Dashboard (Bar Chart R2 & MAPE - Slide Ringkasan)
+    2. Actual vs Predicted Overlaid Time-Series (Perbandingan Langsung dalam 1 Plot)
+    3. Regression Scatter Parity Plot (Titik sebaran vs Garis Ideal 45 Derajat y = x)
+    4. Dinamika Konvergensi Teranotasi Early Stopping (Iterasi Riil & Alasan Konvergensi)
+    """
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'axes.facecolor': '#FAFAFA',
         'figure.facecolor': '#FFFFFF',
         'axes.grid': True,
-        'grid.color': '#E0E0E0',
-        'grid.linestyle': '-.',
+        'grid.color': '#E5E7EB',
+        'grid.linestyle': '--',
         'grid.alpha': 0.7,
         'axes.spines.top': False,
         'axes.spines.right': False,
-        'axes.edgecolor': '#BDBDBD',
-        'axes.linewidth': 1.1
+        'axes.edgecolor': '#9CA3AF',
+        'axes.linewidth': 1.1,
+        'font.size': 10
     })
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for i, ticker in enumerate(tickers):
-        roa_curve = results_compare[ticker]["roa"]["log"]
-        bp_curve = results_compare[ticker]["bp"]["log"]
+    COLOR_ACTUAL = '#0F172A'  # Hitam arang ground truth
+    COLOR_ROA = '#2563EB'     # Biru royal ROA-MLP
+    COLOR_BP = '#EA580C'      # Oranye/Amber Backprop-Adam
 
-        x_roa = np.linspace(1, 200, len(roa_curve))
-        x_bp = np.linspace(1, 200, len(bp_curve))
+    # =========================================================================
+    # 1. EXECUTIVE PERFORMANCE DASHBOARD (Slide 1: Ringkasan Eksekutif)
+    # =========================================================================
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    x = np.arange(len(tickers))
+    width = 0.35
 
-        axes[i].plot(x_roa, roa_curve, label="Remora Optimization (ROA)", color='#0284C7', linewidth=2.2)
-        axes[i].plot(x_bp, bp_curve, label="Backpropagation (Adam)", color='#F59E0B', linestyle='--', linewidth=2.0)
+    r2_roa = [results_compare[t]["roa"]["metrics"]["R2"] for t in tickers]
+    r2_bp = [results_compare[t]["bp"]["metrics"]["R2"] for t in tickers]
 
-        axes[i].set_title(f"{ticker}: Convergence Curve", fontsize=13, fontweight='bold', pad=10)
-        axes[i].set_xlabel("Normalized Iteration / Epoch", fontsize=11, color='#374151')
-        axes[i].set_ylabel("Fitness Loss (MSE Log Scale)", fontsize=11, color='#374151')
-        axes[i].set_yscale("log")
-        axes[i].legend(frameon=True, facecolor='#FFFFFF', edgecolor='#E0E0E0', framealpha=0.95)
+    rects1 = axes[0].bar(x - width/2, r2_roa, width, label='Remora Optimization (ROA-MLP)', color=COLOR_ROA, alpha=0.9, edgecolor='#1D4ED8')
+    rects2 = axes[0].bar(x + width/2, r2_bp, width, label='Backpropagation (Adam-MLP)', color=COLOR_BP, alpha=0.85, edgecolor='#C2410C')
 
-    plt.suptitle("Kurva Konvergensi Pelatihan: ROA-MLP vs BP-Adam", fontsize=15, fontweight='bold', y=1.02)
+    axes[0].set_title(r"Akurasi Regresi ($R^2$ Score) — Semakin Tinggi Semakin Baik", fontsize=13, fontweight='bold', pad=12)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(tickers, fontsize=11, fontweight='bold')
+    axes[0].set_ylabel(r"Koefisien Determinasi ($R^2$)", fontsize=11)
+    axes[0].axhline(0, color='#6B7280', linestyle='-', linewidth=0.8)
+    axes[0].legend(loc='lower right', frameon=True, facecolor='#FFFFFF', edgecolor='#E5E7EB')
+
+    for rect in rects1:
+        h = rect.get_height()
+        y_pos = h + (0.04 if h >= 0 else -0.2)
+        axes[0].annotate(f"{h:.3f}", xy=(rect.get_x() + rect.get_width() / 2, y_pos),
+                         ha='center', va='bottom' if h >= 0 else 'top', fontsize=9.5, fontweight='bold', color=COLOR_ROA)
+
+    for rect in rects2:
+        h = rect.get_height()
+        y_pos = h + (0.04 if h >= 0 else -0.2)
+        axes[0].annotate(f"{h:.3f}", xy=(rect.get_x() + rect.get_width() / 2, y_pos),
+                         ha='center', va='bottom' if h >= 0 else 'top', fontsize=9.5, fontweight='bold', color=COLOR_BP)
+
+    mape_roa = [results_compare[t]["roa"]["metrics"]["MAPE"] for t in tickers]
+    mape_bp = [results_compare[t]["bp"]["metrics"]["MAPE"] for t in tickers]
+
+    rects3 = axes[1].bar(x - width/2, mape_roa, width, label='Remora Optimization (ROA-MLP)', color=COLOR_ROA, alpha=0.9, edgecolor='#1D4ED8')
+    rects4 = axes[1].bar(x + width/2, mape_bp, width, label='Backpropagation (Adam-MLP)', color=COLOR_BP, alpha=0.85, edgecolor='#C2410C')
+
+    axes[1].set_title("Tingkat Kesalahan Prediksi (MAPE %) — Semakin Rendah Semakin Baik", fontsize=13, fontweight='bold', pad=12)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(tickers, fontsize=11, fontweight='bold')
+    axes[1].set_ylabel("Mean Absolute Percentage Error (%)", fontsize=11)
+    axes[1].legend(loc='upper right', frameon=True, facecolor='#FFFFFF', edgecolor='#E5E7EB')
+
+    for rect in rects3:
+        h = rect.get_height()
+        axes[1].annotate(f"{h:.2f}%", xy=(rect.get_x() + rect.get_width() / 2, h + 0.3),
+                         ha='center', va='bottom', fontsize=9.5, fontweight='bold', color=COLOR_ROA)
+
+    for rect in rects4:
+        h = rect.get_height()
+        axes[1].annotate(f"{h:.2f}%", xy=(rect.get_x() + rect.get_width() / 2, h + 0.3),
+                         ha='center', va='bottom', fontsize=9.5, fontweight='bold', color=COLOR_BP)
+
+    plt.suptitle("Executive Summary: Performa Prediksi ROA-MLP vs BP-Adam", fontsize=15, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig("roa_vs_backprop_convergence_3assets.png", dpi=200, bbox_inches='tight')
+    plt.savefig("executive_performance_dashboard.png", dpi=200, bbox_inches='tight')
     plt.close()
 
-    fig, axes = plt.subplots(3, 2, figsize=(16, 15))
+    # =========================================================================
+    # 2. TIME-SERIES ACTUAL VS PREDICTED (Slide 2: Overlaid Tracking)
+    # =========================================================================
+    fig, axes = plt.subplots(3, 1, figsize=(16, 13), sharex=False)
     for i, ticker in enumerate(tickers):
         y_true = results_compare[ticker]["y_true"]
         y_roa = results_compare[ticker]["roa"]["pred"]
         y_bp = results_compare[ticker]["bp"]["pred"]
 
         r2_roa = results_compare[ticker]['roa']['metrics']['R2']
+        mape_roa = results_compare[ticker]['roa']['metrics']['MAPE']
+        rmse_roa = results_compare[ticker]['roa']['metrics']['RMSE']
+
         r2_bp = results_compare[ticker]['bp']['metrics']['R2']
+        mape_bp = results_compare[ticker]['bp']['metrics']['MAPE']
+        rmse_bp = results_compare[ticker]['bp']['metrics']['RMSE']
 
-        axes[i, 0].plot(y_true, label="Harga Aktual", color='#0F172A', linewidth=2.2, zorder=3)
-        axes[i, 0].plot(y_roa, label=f"ROA-MLP (R² = {r2_roa:.3f})", color='#0284C7', linestyle='-.', linewidth=2.0, zorder=2)
-        axes[i, 0].fill_between(range(len(y_true)), y_true, y_roa, alpha=0.12, color='#0284C7', zorder=1)
-        axes[i, 0].set_title(f"{ticker}: Aktual vs Remora Optimization (ROA)", fontsize=12, fontweight='bold')
-        axes[i, 0].set_ylabel("Harga Nominal", fontsize=10)
-        axes[i, 0].legend(loc='best', frameon=True, facecolor='#FFFFFF', edgecolor='#E0E0E0')
+        winner_badge = "[WINNER: ROA Lebih Akurat]" if r2_roa > r2_bp else "[Adam Lebih Baik]"
+        badge_border = "#15803D" if r2_roa > r2_bp else "#B45309"
 
-        axes[i, 1].plot(y_true, label="Harga Aktual", color='#0F172A', linewidth=2.2, zorder=3)
-        axes[i, 1].plot(y_bp, label=f"BP-Adam (R² = {r2_bp:.3f})", color='#F59E0B', linestyle='--', linewidth=2.0, zorder=2)
-        axes[i, 1].fill_between(range(len(y_true)), y_true, y_bp, alpha=0.12, color='#F59E0B', zorder=1)
-        axes[i, 1].set_title(f"{ticker}: Aktual vs Backprop (Adam)", fontsize=12, fontweight='bold')
-        axes[i, 1].legend(loc='best', frameon=True, facecolor='#FFFFFF', edgecolor='#E0E0E0')
+        axes[i].plot(y_true, label="Harga Aktual (Ground Truth)", color=COLOR_ACTUAL, linewidth=2.4, zorder=3)
+        axes[i].plot(y_roa, label=f"Remora Optimization (ROA)  [R²={r2_roa:.4f}, MAPE={mape_roa:.2f}%]", color=COLOR_ROA, linewidth=2.0, linestyle='-', zorder=4)
+        axes[i].plot(y_bp, label=f"Backpropagation (Adam)     [R²={r2_bp:.4f}, MAPE={mape_bp:.2f}%]", color=COLOR_BP, linewidth=1.7, linestyle='--', zorder=2)
 
-    plt.suptitle("Perbandingan Prediksi Harga Saham pada Test Set", fontsize=16, fontweight='bold', y=1.02)
+        axes[i].fill_between(range(len(y_true)), y_true, y_roa, alpha=0.10, color=COLOR_ROA, label="Area Deviasi ROA")
+
+        currency = "IDR" if "JK" in ticker else "USD"
+        axes[i].set_title(f"Saham: {ticker} — Perbandingan Prediksi Tren Harga Out-of-Sample", fontsize=13, fontweight='bold', loc='left', pad=10)
+        axes[i].set_xlabel("Sampel Hari Uji (Test Index)", fontsize=10)
+        axes[i].set_ylabel(f"Harga ({currency})", fontsize=10)
+        axes[i].legend(loc='upper left', frameon=True, facecolor='#FFFFFF', edgecolor='#D1D5DB', fontsize=9.5)
+
+        stat_box = (
+            f"Evaluasi Metrik {ticker}:\n"
+            f"• ROA-MLP : RMSE={rmse_roa:.2f} | R²={r2_roa:.4f} | MAPE={mape_roa:.2f}%\n"
+            f"• BP-Adam : RMSE={rmse_bp:.2f} | R²={r2_bp:.4f} | MAPE={mape_bp:.2f}%\n"
+            f"Status: {winner_badge}"
+        )
+        axes[i].text(0.98, 0.08, stat_box, transform=axes[i].transAxes, fontsize=9.5,
+                     verticalalignment='bottom', horizontalalignment='right',
+                     bbox=dict(boxstyle='round,pad=0.5', facecolor='#F8FAFC', edgecolor=badge_border, linewidth=1.3))
+
+    plt.suptitle("Perbandingan Prediksi Harga Saham pada Test Set: ROA-MLP vs BP-Adam", fontsize=16, fontweight='bold', y=1.01)
     plt.tight_layout()
+    plt.savefig("actual_vs_predicted_time_series.png", dpi=200, bbox_inches='tight')
     plt.savefig("actual_vs_predicted_roa_3assets.png", dpi=200, bbox_inches='tight')
     plt.close()
+
+    # =========================================================================
+    # 3. REGRESSION SCATTER / PARITY PLOT (Slide 3: Garis Diagonal 45 Derajat)
+    # =========================================================================
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+    for i, ticker in enumerate(tickers):
+        y_true = results_compare[ticker]["y_true"]
+        y_roa = results_compare[ticker]["roa"]["pred"]
+        y_bp = results_compare[ticker]["bp"]["pred"]
+        r2_roa = results_compare[ticker]['roa']['metrics']['R2']
+        r2_bp = results_compare[ticker]['bp']['metrics']['R2']
+
+        axes[i].scatter(y_true, y_roa, color=COLOR_ROA, alpha=0.6, s=28, label=f"ROA-MLP (R² = {r2_roa:.3f})", edgecolor='none')
+        axes[i].scatter(y_true, y_bp, color=COLOR_BP, alpha=0.45, s=24, marker='^', label=f"BP-Adam (R² = {r2_bp:.3f})", edgecolor='none')
+
+        min_val = min(np.min(y_true), np.min(y_roa), np.min(y_bp))
+        max_val = max(np.max(y_true), np.max(y_roa), np.max(y_bp))
+        axes[i].plot([min_val, max_val], [min_val, max_val], color='#DC2626', linestyle='--', linewidth=1.8, label="Garis Ideal Paritas (y = x)")
+
+        axes[i].set_title(rf"{ticker}: Parity Scatter ($y_{{actual}}$ vs $\hat{{y}}_{{pred}}$)", fontsize=12, fontweight='bold', pad=10)
+        axes[i].set_xlabel(r"Harga Aktual ($y_{true}$)", fontsize=10)
+        axes[i].set_ylabel(r"Harga Prediksi ($\hat{y}$)", fontsize=10)
+        axes[i].legend(loc='upper left', frameon=True, facecolor='#FFFFFF', edgecolor='#E5E7EB', fontsize=9)
+
+    plt.suptitle("Analisis Paritas Regresi (Titik Merapat ke Garis 45 Derajat Menandakan Prediksi Sangat Akurat)", fontsize=15, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig("regression_scatter_parity.png", dpi=200, bbox_inches='tight')
+    plt.close()
+
+    # =========================================================================
+    # 4. CONVERGENCE DYNAMICS WITH EARLY STOPPING ANNOTATION (Slide 4)
+    # =========================================================================
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.2))
+    for i, ticker in enumerate(tickers):
+        roa_curve = results_compare[ticker]["roa"]["log"]
+        bp_curve = results_compare[ticker]["bp"]["log"]
+
+        iters_roa = np.arange(1, len(roa_curve) + 1)
+        iters_bp = np.arange(1, len(bp_curve) + 1)
+
+        axes[i].plot(iters_roa, roa_curve, label=f"Remora Optimization (ROA) [{len(roa_curve)} iterasi]", color=COLOR_ROA, linewidth=2.2)
+        axes[i].plot(iters_bp, bp_curve, label=f"Backpropagation (Adam) [{len(bp_curve)} iterasi]", color=COLOR_BP, linestyle='--', linewidth=1.8)
+
+        stop_iter = len(roa_curve)
+        best_loss = min(roa_curve)
+        if stop_iter < 200:
+            axes[i].axvline(x=stop_iter, color='#DC2626', linestyle=':', linewidth=1.5, alpha=0.85)
+            axes[i].scatter([stop_iter], [roa_curve[-1]], color='#DC2626', s=40, zorder=5, label=f"Early Stop (Iter {stop_iter})")
+            axes[i].annotate(
+                f"Early Stopping Terpicu\nIterasi {stop_iter} | Loss: {best_loss:.4e}",
+                xy=(stop_iter, roa_curve[-1]),
+                xytext=(-60, 25),
+                textcoords="offset points",
+                arrowprops=dict(arrowstyle="->", color='#DC2626', lw=1.2, shrinkB=4),
+                fontsize=8.5,
+                fontweight='bold',
+                color='#991B1B',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#FEF2F2', edgecolor='#FCA5A5')
+            )
+
+        axes[i].set_title(f"{ticker}: Dinamika Konvergensi Fitness Loss", fontsize=12, fontweight='bold', pad=10)
+        axes[i].set_xlabel("Iterasi Riil (Actual Iteration / Epoch)", fontsize=10)
+        axes[i].set_ylabel("Fitness Loss (MSE Skala Log)", fontsize=10)
+        axes[i].set_yscale("log")
+        axes[i].legend(loc='upper right', frameon=True, facecolor='#FFFFFF', edgecolor='#E5E7EB', fontsize=9)
+
+    plt.suptitle("Kurva Konvergensi Pelatihan: ROA-MLP vs Backpropagation (Adam)", fontsize=15, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig("roa_vs_backprop_convergence_clarified.png", dpi=200, bbox_inches='tight')
+    plt.savefig("roa_vs_backprop_convergence_3assets.png", dpi=200, bbox_inches='tight')
+    plt.close()
+    print("[+] Seluruh visualisasi komparatif presentasi berhasil disimpan.")
 
 def export_research_data_to_csv(results_compare, tickers):
     print("\n[*] Mengekspor seluruh data metrik dan prediksi ke CSV...")
