@@ -1,11 +1,3 @@
-# -*- coding: utf-8 -*-
-"""MLP_ROA.py
-
-Model Prediksi Harga Saham Multi-Layer Perceptron (3 Hidden Layers: 128, 64, 32)
-Teroptimasi Remora Optimization Algorithm (ROA) vs Backpropagation (Adam).
-Diimplementasikan berdasarkan Jia et al. (2021).
-"""
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -20,18 +12,19 @@ import matplotlib.dates as mdates
 import warnings
 warnings.filterwarnings('ignore')
 
-# ==============================================================================
-# 1. REMORA OPTIMIZATION ALGORITHM (ROA) ENGINE
-# ==============================================================================
+print("[*] Seluruh pustaka berhasil dimuat dengan sukses.")
+
 class RemoraOptimizationAlgorithm:
     """
     Remora Optimization Algorithm (ROA) - Jia et al. (2021).
     Algoritma Metaheuristik Remora Optimization Algorithm (ROA) dengan parameter konsisten:
-    N = 150, Max Iter = 200, Bounds = [-1.0, 1.0], Seed = 67.
+    Populasi (N) = [20, 100, 200, 300], Iterasi (T) = [100, 300], Bounds = [-1.0, 1.0], Patience = 40 (MSE Validasi).
     """
     def __init__(self, cost_function, dim, n_agents=100, max_iter=100,
-                 lower_bound=-1.0, upper_bound=1.0, seed=67, C=0.1, patience=40):
+                 lower_bound=-1.0, upper_bound=1.0, seed=67, C=0.1, patience=40,
+                 val_cost_function=None):
         self.cost_function = cost_function
+        self.val_cost_function = val_cost_function
         self.dim = dim
         self.n_agents = n_agents
         self.max_iter = max_iter
@@ -55,7 +48,14 @@ class RemoraOptimizationAlgorithm:
         global_best_cost = fitness[best_idx]
         global_best_pos = population[best_idx].copy()
 
+        if self.val_cost_function is not None:
+            best_val_mse = float(self.val_cost_function(global_best_pos))
+        else:
+            best_val_mse = float(global_best_cost)
+        best_val_pos = global_best_pos.copy()
+
         convergence_curve = np.zeros(self.max_iter)
+        val_convergence_curve = np.zeros(self.max_iter)
         patience_counter = 0
 
         print(f"\n--- Memulai Remora Optimization Algorithm (ROA) ---")
@@ -123,22 +123,37 @@ class RemoraOptimizationAlgorithm:
             prev_population = population.copy()
             convergence_curve[t] = global_best_cost
 
-            if iter_improved:
-                patience_counter = 0
+            if self.val_cost_function is not None:
+                current_val_mse = float(self.val_cost_function(global_best_pos))
+                val_convergence_curve[t] = current_val_mse
+                if current_val_mse < best_val_mse:
+                    best_val_mse = current_val_mse
+                    best_val_pos = global_best_pos.copy()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
             else:
-                patience_counter += 1
+                val_convergence_curve[t] = global_best_cost
+                if iter_improved:
+                    best_val_mse = float(global_best_cost)
+                    best_val_pos = global_best_pos.copy()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
 
             if (t + 1) % 10 == 0 or t == 0 or (t + 1) == self.max_iter:
-                print(f"Iterasi {t+1:03d}/{self.max_iter} | Inang: [Sailfish: {sailfish_count:02d}, Whale: {whale_count:02d}] | Best Fitness (RMSE): {global_best_cost:.6f}")
+                print(f"Iterasi {t+1:03d}/{self.max_iter} | Inang: [Sailfish: {sailfish_count:02d}, Whale: {whale_count:02d}] | Train RMSE: {global_best_cost:.6f} | Val MSE: {val_convergence_curve[t]:.6f}")
 
-            if patience_counter >= self.patience and (t + 1) >= 50:
-                print(f"[*] Early stopping pada iterasi {t+1} (patience = {self.patience}).")
-                convergence_curve[t:] = global_best_cost
+            if patience_counter >= self.patience:
+                print(f"[*] Early stopping pada iterasi {t+1} (MSE validasi tidak membaik selama {self.patience} iterasi).")
+                stop_iteration = t + 1
+                convergence_curve = convergence_curve[:stop_iteration]
+                val_convergence_curve = val_convergence_curve[:stop_iteration]
                 break
 
-        return global_best_pos, global_best_cost, convergence_curve
+        return best_val_pos, best_val_mse, convergence_curve, val_convergence_curve
 
-def run_remora_optimizer(n_agents, max_iter, dim, lower_bound, upper_bound, cost_function, seed=67, C=0.1, patience=40):
+def run_remora_optimizer(n_agents, max_iter, dim, lower_bound, upper_bound, cost_function, seed=67, C=0.1, patience=40, val_cost_function=None):
     roa = RemoraOptimizationAlgorithm(
         cost_function=cost_function,
         dim=dim,
@@ -148,28 +163,32 @@ def run_remora_optimizer(n_agents, max_iter, dim, lower_bound, upper_bound, cost
         upper_bound=upper_bound,
         seed=seed,
         C=C,
-        patience=patience
+        patience=patience,
+        val_cost_function=val_cost_function
     )
     return roa.optimize()
 
-# ==============================================================================
-# 2. DATA ACQUISITION & PREPROCESSING
-# ==============================================================================
 def fetch_data(ticker, period="5y", interval="1d"):
     df = yf.download(ticker, period=period, interval=interval, auto_adjust=False)
+    # Penanganan aman MultiIndex yfinance versi modern
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df[["Open", "High", "Low", "Close", "Adj Close", "Volume"]].dropna()
+    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 def create_sliding_window(df, window_size=10):
+    """
+    Mengubah data tabular menjadi format 3D sliding window.
+    Input: df (DataFrame harga OHLCV)
+    Output: X (samples, window_size, 5), y (target log return)
+    """
     data = df.values
     close_series = df["Close"].values.ravel()
-    target = np.log(close_series[1:] / close_series[:-1])
+    target = np.log(close_series[1:] / close_series[:-1])  # Log Return sebagai target
 
     X, y = [], []
     for i in range(window_size, len(data) - 1):
-        X.append(data[i - window_size:i, :])
-        y.append(target[i])
+        X.append(data[i - window_size:i, :])  # Jendela 10 hari ke belakang
+        y.append(target[i])                   # Prediksi return besok
 
     return np.array(X), np.array(y).reshape(-1, 1)
 
@@ -182,6 +201,7 @@ def split_and_scale(X, y):
     X_val, y_val = X[tr_end:val_end], y[tr_end:val_end]
     X_te, y_te = X[val_end:], y[val_end:]
 
+    # Scaling 2D ke 3D (Fit hanya pada Train Set untuk mencegah data leakage)
     n_samples, window, n_feats = X.shape
     sx = MinMaxScaler().fit(X_tr.reshape(-1, n_feats))
     sy = MinMaxScaler().fit(y_tr)
@@ -194,33 +214,39 @@ def split_and_scale(X, y):
             X_val_scaled, sy.transform(y_val),
             X_te_scaled, sy.transform(y_te), sx, sy)
 
-# ==============================================================================
-# 3. MLP ARCHITECTURE & PARAMETER UNPACKING
-# ==============================================================================
 WINDOW_SIZE = 10
-N_FEATURES = 6
+N_FEATURES = 5
 FLATTEN_SIZE = WINDOW_SIZE * N_FEATURES
 
+# Perhitungan dimensi parameter total D secara dinamis
 w1_params = (FLATTEN_SIZE * 128) + 128
 w2_params = (128 * 64) + 64
 w3_params = (64 * 32) + 32
 w4_params = (32 * 1) + 1
 
 D = w1_params + w2_params + w3_params + w4_params
+print(f"[*] Arsitektur MLP: [{FLATTEN_SIZE} -> 128 -> 64 -> 32 -> 1]")
+print(f"[*] Total Dimensi Parameter Bobot & Bias (D): {D}")
 
 def unpack(theta):
+    """Membongkar vektor 1D theta berukuran D menjadi matriks bobot dan bias MLP."""
     i = 0
+    # Layer 1
     W1 = theta[i:i + (FLATTEN_SIZE * 128)].reshape(FLATTEN_SIZE, 128); i += (FLATTEN_SIZE * 128)
     b1 = theta[i:i + 128]; i += 128
+    # Layer 2
     W2 = theta[i:i + (128 * 64)].reshape(128, 64); i += (128 * 64)
     b2 = theta[i:i + 64]; i += 64
+    # Layer 3
     W3 = theta[i:i + (64 * 32)].reshape(64, 32); i += (64 * 32)
     b3 = theta[i:i + 32]; i += 32
+    # Output Layer
     W4 = theta[i:i + 32].reshape(32, 1); i += 32
     b4 = theta[i:i + 1]
     return W1, b1, W2, b2, W3, b3, W4, b4
 
 def mlp_forward(theta, X):
+    """Forward pass jaringan MLP menggunakan aktivasi tanh pada hidden layer."""
     X_flat = X.reshape(X.shape[0], -1)
     W1, b1, W2, b2, W3, b3, W4, b4 = unpack(theta)
 
@@ -231,19 +257,50 @@ def mlp_forward(theta, X):
     return out
 
 def fitness(theta, X, y):
+    """Fungsi fitness: Root Mean Squared Error (RMSE) antara target dan prediksi."""
     mse = np.mean((y - mlp_forward(theta, X)) ** 2)
     return np.sqrt(mse)
 
+def mse_loss(theta, X, y):
+    pred = mlp_forward(theta, X)
+    return np.mean((y - pred) ** 2)
+
+# ==============================================================================
+# KONFIGURASI EKSPERIMENTAL ROA & BACKPROPAGATION
+# ==============================================================================
+POPULATION_SIZES = [20, 100, 200, 300]
+MAX_ITERATIONS = [100, 300]
+BOUNDS = (-1.0, 1.0)
+EARLY_STOPPING_PATIENCE = 40
+BP_EPOCHS = [100]
+
+print(f"[*] Konfigurasi ROA : Populasi N={POPULATION_SIZES} | Iterasi T={MAX_ITERATIONS} | Bounds={list(BOUNDS)}")
+print(f"[*] Early Stopping  : Patience={EARLY_STOPPING_PATIENCE} iterasi (berbasis MSE Validasi)")
+print(f"[*] Backpropagation : Epochs={BP_EPOCHS}")
+
 def create_roa_cost(X, y):
+    """Membungkus fungsi fitness agar optimizer hanya perlu memasukkan vektor 'theta'."""
     def cost_function(theta):
         return fitness(theta, X, y)
     return cost_function
 
+def create_roa_mse_cost(X, y):
+    """Membungkus fungsi MSE validasi untuk Early Stopping."""
+    def val_cost_function(theta):
+        return mse_loss(theta, X, y)
+    return val_cost_function
+
 create_po_cost = create_roa_cost
 
-def roa_optimize(X_train, y_train, X_val, y_val, N=100, T=100, bounds=(-1.0, 1.0), seed=67, patience=40):
+def roa_optimize(X_train, y_train, X_val, y_val, N=100, T=100, bounds=BOUNDS, seed=67, patience=EARLY_STOPPING_PATIENCE):
+    """
+    Menjalankan pelatihan MLP menggunakan Remora Optimization Algorithm (ROA)
+    dengan Early Stopping berbasis MSE validasi (patience=40).
+    """
     train_cost = create_roa_cost(X_train, y_train)
-    best_theta, best_cost, convergence_curve = run_remora_optimizer(
+    val_cost = create_roa_mse_cost(X_val, y_val)
+
+    best_theta, best_val_mse, convergence_curve, val_convergence_curve = run_remora_optimizer(
         n_agents=N,
         max_iter=T,
         dim=D,
@@ -252,17 +309,19 @@ def roa_optimize(X_train, y_train, X_val, y_val, N=100, T=100, bounds=(-1.0, 1.0
         cost_function=train_cost,
         seed=seed,
         C=0.1,
-        patience=patience
+        patience=patience,
+        val_cost_function=val_cost
     )
-    best_val_cost = fitness(best_theta, X_val, y_val)
-    return best_theta, best_val_cost, convergence_curve
+
+    print(f"[*] Optimasi ROA Selesai (N={N}, T={T}). Best Val MSE: {best_val_mse:.6f} | Stop@{len(convergence_curve)}/{T}")
+    return best_theta, best_val_mse, convergence_curve, val_convergence_curve
 
 po_optimize = roa_optimize
 
-# ==============================================================================
-# 4. BASELINE BACKPROPAGATION (Adam)
-# ==============================================================================
 def train_mlp_backprop(X_train, y_train, X_val, y_val, epochs=100, lr=0.01):
+    """Pelatihan baseline MLP menggunakan Backpropagation (Adam) dengan 3 Hidden Layers."""
+    torch.manual_seed(67)
+    np.random.seed(67)
     X_tr_t = torch.FloatTensor(X_train.reshape(X_train.shape[0], -1))
     y_tr_t = torch.FloatTensor(y_train)
     X_val_t = torch.FloatTensor(X_val.reshape(X_val.shape[0], -1))
@@ -306,52 +365,27 @@ def train_mlp_backprop(X_train, y_train, X_val, y_val, epochs=100, lr=0.01):
                 history_mse.append(val_loss)
 
     train_time = time.time() - start_time
+    print(f"[*] Pelatihan BP (Adam) Selesai dalam {train_time:.2f} detik. Final Val Loss: {history_mse[-1]:.6f}")
     return model, history_mse, train_time
 
-# ==============================================================================
-# 5. PIPELINE UTAMA
-# ==============================================================================
-def run_comparative_pipeline(ticker):
+def run_comparative_pipeline(ticker, pop_sizes=POPULATION_SIZES, max_iters=MAX_ITERATIONS,
+                             bounds=BOUNDS, patience=EARLY_STOPPING_PATIENCE, bp_epochs=BP_EPOCHS):
     print(f"\n==================================================")
     print(f"         MEMPROSES SAHAM: {ticker}                ")
     print(f"==================================================")
     df = fetch_data(ticker)
 
     X, y = create_sliding_window(df, window_size=WINDOW_SIZE)
-    print(f"[*] Dimensi tensor X: {X.shape}")
+    print(f"[*] Dimensi tensor X setelah sliding window: {X.shape}")
 
     close_prices = df["Close"].values[WINDOW_SIZE:].ravel()
     X_tr, y_tr, X_val, y_val, X_te, y_te, sx, sy = split_and_scale(X, y)
 
-    # 1. ROA
-    print("\n[1/2] Melatih dengan Remora Optimization Algorithm (ROA)...")
-    start_roa = time.time()
-    theta, f_best, roa_log = roa_optimize(X_tr, y_tr, X_val, y_val)
-    time_roa = time.time() - start_roa
-
-    # 2. Backprop
-    print("\n[2/2] Melatih dengan Backpropagation (Adam)...")
-    model_bp, bp_log, time_bp = train_mlp_backprop(X_tr, y_tr, X_val, y_val, epochs=100, lr=0.01)
-
-    # 3. Rekonstruksi Harga
     n = len(X)
     val_end = int(0.85 * n)
-
     close_yesterday_test = close_prices[val_end : -1].ravel()
     close_actual_test = close_prices[val_end + 1 :].ravel()
-
-    y_pred_roa_log_ret = sy.inverse_transform(mlp_forward(theta, X_te)).ravel()
-
-    model_bp.eval()
-    with torch.no_grad():
-        X_te_flat_torch = torch.FloatTensor(X_te.reshape(X_te.shape[0], -1))
-        y_pred_bp_log_ret = sy.inverse_transform(model_bp(X_te_flat_torch).numpy()).ravel()
-
-    min_len = min(len(close_yesterday_test), len(y_pred_roa_log_ret), len(y_pred_bp_log_ret), len(close_actual_test))
-    close_yesterday_test = close_yesterday_test[:min_len]
-    y_pred_roa_price = (close_yesterday_test * np.exp(y_pred_roa_log_ret[:min_len])).ravel()
-    y_pred_bp_price = (close_yesterday_test * np.exp(y_pred_bp_log_ret[:min_len])).ravel()
-    y_true_price = close_actual_test[:min_len].ravel()
+    X_te_flat_torch = torch.FloatTensor(X_te.reshape(X_te.shape[0], -1))
 
     def calc_metrics(y_true, y_pred):
         return {
@@ -361,24 +395,95 @@ def run_comparative_pipeline(ticker):
             "R2": float(r2_score(y_true, y_pred))
         }
 
-    metrics_roa = calc_metrics(y_true_price, y_pred_roa_price)
-    metrics_bp = calc_metrics(y_true_price, y_pred_bp_price)
+    # 1. Pelatihan Backpropagation (Adam): epochs = [100]
+    print(f"\n[1/2] Eksperimen Backpropagation (Adam) dengan variasi epochs={bp_epochs}...")
+    bp_experiments = []
+    best_bp = None
 
-    print(f"\n--- Rangkuman Hasil {ticker} ---")
-    print(f"Waktu ROA : {time_roa:.2f} detik | Waktu BP: {time_bp:.2f} detik")
-    print(f"Metrik ROA: {metrics_roa}")
-    print(f"Metrik BP : {metrics_bp}")
+    for ep in bp_epochs:
+        print(f"\n>>> Eksperimen BP {ticker} | Epochs={ep}")
+        model_bp, bp_log, time_bp = train_mlp_backprop(X_tr, y_tr, X_val, y_val, epochs=ep, lr=0.01)
+        model_bp.eval()
+        with torch.no_grad():
+            y_pred_bp_log_ret = sy.inverse_transform(model_bp(X_te_flat_torch).numpy()).ravel()
+
+        min_len = min(len(close_yesterday_test), len(y_pred_bp_log_ret), len(close_actual_test))
+        y_pred_bp_price = (close_yesterday_test[:min_len] * np.exp(y_pred_bp_log_ret[:min_len])).ravel()
+        y_true_price = close_actual_test[:min_len].ravel()
+        metrics_bp = calc_metrics(y_true_price, y_pred_bp_price)
+
+        bp_record = {
+            "epochs": ep,
+            "final_val_mse": float(bp_log[-1]),
+            "metrics": metrics_bp,
+            "time": time_bp,
+            "log": bp_log,
+            "pred": y_pred_bp_price,
+        }
+        bp_experiments.append(bp_record)
+        print(f"    [Hasil BP Epochs={ep}] Val MSE: {bp_log[-1]:.6f} | Test R2: {metrics_bp['R2']:.4f} | MAPE: {metrics_bp['MAPE']:.2f}% | Waktu: {time_bp:.2f}s")
+
+        if best_bp is None or bp_record["final_val_mse"] < best_bp["final_val_mse"]:
+            best_bp = bp_record
+
+    # 2. Eksperimen Grid ROA: N in [20, 100, 200, 300] x T in [100, 300], Bounds=[-1, 1], Patience=40
+    print(f"\n[2/2] Eksperimen ROA (N={pop_sizes}, T={max_iters}, Bounds={bounds}, Patience={patience})...")
+    experiments = []
+    best_exp = None
+
+    for N in pop_sizes:
+        for T in max_iters:
+            print(f"\n>>> Eksperimen ROA {ticker} | N={N}, T={T}, Bounds={list(bounds)}, Patience={patience}")
+            start_roa = time.time()
+            theta, best_val_mse, roa_log, roa_val_log = roa_optimize(
+                X_tr, y_tr, X_val, y_val,
+                N=N, T=T, bounds=bounds, seed=67, patience=patience
+            )
+            time_roa = time.time() - start_roa
+
+            y_pred_roa_log_ret = sy.inverse_transform(mlp_forward(theta, X_te)).ravel()
+            min_len = min(len(close_yesterday_test), len(y_pred_roa_log_ret), len(best_bp["pred"]), len(close_actual_test))
+            cy_t = close_yesterday_test[:min_len]
+            y_pred_roa_price = (cy_t * np.exp(y_pred_roa_log_ret[:min_len])).ravel()
+            y_true_price = close_actual_test[:min_len].ravel()
+            metrics_roa = calc_metrics(y_true_price, y_pred_roa_price)
+
+            exp_record = {
+                "N": N,
+                "T": T,
+                "bounds": bounds,
+                "stop_iter": len(roa_log),
+                "early_stopped": len(roa_log) < T,
+                "best_val_mse": float(best_val_mse),
+                "metrics": metrics_roa,
+                "time": time_roa,
+                "log": roa_log,
+                "val_log": roa_val_log,
+                "pred": y_pred_roa_price,
+            }
+            experiments.append(exp_record)
+            print(f"    [Hasil ROA N={N}, T={T}] Stop@{len(roa_log)}/{T} | Val MSE: {best_val_mse:.6f} | Test R2: {metrics_roa['R2']:.4f} | MAPE: {metrics_roa['MAPE']:.2f}% | Waktu: {time_roa:.2f}s")
+
+            if best_exp is None or exp_record["best_val_mse"] < best_exp["best_val_mse"]:
+                best_exp = exp_record
+
+    min_len = min(len(best_exp["pred"]), len(best_bp["pred"]), len(close_actual_test))
+    y_true_final = close_actual_test[:min_len].ravel()
+
+    print(f"\n--- Rangkuman Hasil Terbaik {ticker} (ROA N={best_exp['N']}, T={best_exp['T']} vs BP Epochs={best_bp['epochs']}) ---")
+    print(f"Waktu ROA : {best_exp['time']:.2f} detik | Waktu BP: {best_bp['time']:.2f} detik")
+    print(f"Metrik ROA: {best_exp['metrics']}")
+    print(f"Metrik BP : {best_bp['metrics']}")
 
     return {
-        "roa": {"metrics": metrics_roa, "time": time_roa, "log": roa_log, "pred": y_pred_roa_price},
-        "eefo": {"metrics": metrics_roa, "time": time_roa, "log": roa_log, "pred": y_pred_roa_price},
-        "bp": {"metrics": metrics_bp, "time": time_bp, "log": bp_log, "pred": y_pred_bp_price},
-        "y_true": y_true_price
+        "roa": best_exp,
+        "experiments": experiments,
+        "eefo": best_exp,
+        "bp": best_bp,
+        "bp_experiments": bp_experiments,
+        "y_true": y_true_final
     }
 
-# ==============================================================================
-# 6. VISUALIZATION & EXPORT
-# ==============================================================================
 def generate_comparative_plots(results_compare, tickers):
     """
     Menghasilkan 4 set grafik visualisasi komparatif beresolusi tinggi (200 DPI)
@@ -551,14 +656,16 @@ def generate_comparative_plots(results_compare, tickers):
         bp_curve = results_compare[ticker]["bp"]["log"]
 
         iters_roa = np.arange(1, len(roa_curve) + 1)
-        iters_bp = np.arange(1, len(bp_curve) + 1)
+        bp_ep_cfg = results_compare[ticker]['bp'].get('epochs', 100)
+        iters_bp = np.linspace(1, bp_ep_cfg, len(bp_curve))
 
         axes[i].plot(iters_roa, roa_curve, label=f"Remora Optimization (ROA) [{len(roa_curve)} iterasi]", color=COLOR_ROA, linewidth=2.2)
-        axes[i].plot(iters_bp, bp_curve, label=f"Backpropagation (Adam) [{len(bp_curve)} iterasi]", color=COLOR_BP, linestyle='--', linewidth=1.8)
+        axes[i].plot(iters_bp, bp_curve, label=f"Backpropagation (Adam) [{bp_ep_cfg} epochs]", color=COLOR_BP, linestyle='--', linewidth=1.8)
 
         stop_iter = len(roa_curve)
         best_loss = min(roa_curve)
-        if stop_iter < 200:
+        max_t_cfg = results_compare[ticker]['roa'].get('T', 300)
+        if stop_iter < max_t_cfg:
             axes[i].axvline(x=stop_iter, color='#DC2626', linestyle=':', linewidth=1.5, alpha=0.85)
             axes[i].scatter([stop_iter], [roa_curve[-1]], color='#DC2626', s=40, zorder=5, label=f"Early Stop (Iter {stop_iter})")
             axes[i].annotate(
@@ -636,6 +743,152 @@ def export_research_data_to_csv(results_compare, tickers):
     pd.concat(convergence_data, ignore_index=True).to_csv("training_convergence_history_roa.csv", index=False)
     print("[+] Seluruh berkas CSV berhasil diekspor.")
 
+
+def plot_experimental_grid(results_compare, tickers):
+    """Visualisasi heatmap eksperimen grid ROA (N vs T) untuk setiap saham."""
+    n_tickers = len(tickers)
+    fig, axes = plt.subplots(1, n_tickers, figsize=(6 * n_tickers, 4.8))
+    if n_tickers == 1:
+        axes = [axes]
+
+    for i, ticker in enumerate(tickers):
+        exps = results_compare[ticker].get("experiments", [])
+        if not exps:
+            continue
+        df_exp = pd.DataFrame([
+            {"N": e["N"], "T": e["T"], "MAPE": e["metrics"]["MAPE"], "R2": e["metrics"]["R2"], "Stop": e["stop_iter"]}
+            for e in exps
+        ])
+        pivot_mape = df_exp.pivot(index="N", columns="T", values="MAPE")
+        pivot_r2 = df_exp.pivot(index="N", columns="T", values="R2")
+        pivot_stop = df_exp.pivot(index="N", columns="T", values="Stop")
+
+        axes[i].imshow(pivot_mape.values, cmap="YlGnBu_r", aspect="auto")
+        axes[i].set_xticks(range(len(pivot_mape.columns)))
+        axes[i].set_xticklabels([f"T={t}" for t in pivot_mape.columns], fontweight="bold")
+        axes[i].set_yticks(range(len(pivot_mape.index)))
+        axes[i].set_yticklabels([f"N={n}" for n in pivot_mape.index], fontweight="bold")
+        axes[i].set_title(f"{ticker}\nTest MAPE (%), R2 & Stop Iter", fontweight="bold")
+
+        for r in range(len(pivot_mape.index)):
+            for c in range(len(pivot_mape.columns)):
+                val = pivot_mape.values[r, c]
+                r2v = pivot_r2.values[r, c]
+                stp = int(pivot_stop.values[r, c])
+                axes[i].text(c, r, f"MAPE: {val:.2f}%\nR2: {r2v:.3f}\n(stop@{stp})", ha="center", va="center",
+                             color="#0F172A", fontsize=8.5, fontweight="bold")
+
+    plt.suptitle("Eksperimen Grid ROA: Populasi (N) vs Iterasi (T) — Bounds [-1, 1], Early Stopping Patience=40",
+                 fontsize=13, fontweight="bold", y=1.03)
+    plt.tight_layout()
+    plt.savefig("roa_experimental_grid_heatmap.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    print("[+] Heatmap eksperimen grid ROA berhasil disimpan ke roa_experimental_grid_heatmap.png.")
+
+def plot_variations_analysis(results_compare, tickers):
+    """Visualisasi analisis seluruh variasi ROA (N x T) vs Backpropagation (Epochs 80, 100, 200)."""
+    n_tickers = len(tickers)
+    fig, axes = plt.subplots(n_tickers, 3, figsize=(20, 4.8 * n_tickers))
+    if n_tickers == 1:
+        axes = np.array([axes])
+
+    for i, ticker in enumerate(tickers):
+        roa_exps = results_compare[ticker].get("experiments", [])
+        bp_exps = results_compare[ticker].get("bp_experiments", [])
+
+        labels = [f"ROA\nN{e['N']}-T{e['T']}" for e in roa_exps] + [f"BP\nE{b['epochs']}" for b in bp_exps]
+        r2_vals = [e["metrics"]["R2"] for e in roa_exps] + [b["metrics"]["R2"] for b in bp_exps]
+        mape_vals = [e["metrics"]["MAPE"] for e in roa_exps] + [b["metrics"]["MAPE"] for b in bp_exps]
+        time_vals = [e["time"] for e in roa_exps] + [b["time"] for b in bp_exps]
+        colors = ["#2563EB"] * len(roa_exps) + ["#EA580C"] * len(bp_exps)
+        x = np.arange(len(labels))
+
+        # Panel 1: R2 Score
+        axes[i, 0].bar(x, r2_vals, color=colors, edgecolor="#0F172A", linewidth=0.6)
+        axes[i, 0].set_title(f"{ticker} — R2 Score (Lebih Tinggi Lebih Baik)", fontweight="bold")
+        axes[i, 0].set_xticks(x)
+        axes[i, 0].set_xticklabels(labels, fontsize=7.5, rotation=25)
+        axes[i, 0].axhline(0, color="#64748B", linewidth=0.8, linestyle="--")
+
+        # Panel 2: MAPE (%)
+        axes[i, 1].bar(x, mape_vals, color=colors, edgecolor="#0F172A", linewidth=0.6)
+        axes[i, 1].set_title(f"{ticker} — MAPE % (Lebih Rendah Lebih Baik)", fontweight="bold")
+        axes[i, 1].set_xticks(x)
+        axes[i, 1].set_xticklabels(labels, fontsize=7.5, rotation=25)
+
+        # Panel 3: Runtime (s)
+        axes[i, 2].bar(x, time_vals, color=colors, edgecolor="#0F172A", linewidth=0.6)
+        axes[i, 2].set_title(f"{ticker} — Waktu Training (Detik)", fontweight="bold")
+        axes[i, 2].set_xticks(x)
+        axes[i, 2].set_xticklabels(labels, fontsize=7.5, rotation=25)
+
+    plt.suptitle("Analisis Lengkap Seluruh Variasi: ROA (N=[20,100,200,300], T=[100,300]) vs BP (Epochs=100)",
+                 fontsize=14, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    plt.savefig("variations_comparison_analysis.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    print("[+] Grafik analisis seluruh variasi berhasil disimpan ke variations_comparison_analysis.png.")
+
+    # Kurva Konvergensi MSE Validasi untuk Seluruh 8 Kombinasi ROA per Saham
+    fig2, axes2 = plt.subplots(1, n_tickers, figsize=(6.2 * n_tickers, 4.8))
+    if n_tickers == 1:
+        axes2 = [axes2]
+    for i, ticker in enumerate(tickers):
+        for e in results_compare[ticker].get("experiments", []):
+            v_log = e.get("val_log", e["log"])
+            it_x = np.arange(1, len(v_log) + 1)
+            ls = "-" if e["T"] == 300 else "--"
+            axes2[i].plot(it_x, v_log, linestyle=ls, linewidth=1.6,
+                          label=f"N={e['N']}, T={e['T']} (stop@{e['stop_iter']})")
+        axes2[i].set_title(f"{ticker} — Konvergensi Val MSE (8 Kombinasi ROA)", fontweight="bold")
+        axes2[i].set_xlabel("Iterasi")
+        axes2[i].set_ylabel("Validation MSE (Skala Log)")
+        axes2[i].set_yscale("log")
+        axes2[i].legend(fontsize=7.5, loc="upper right", frameon=True, facecolor="#FFFFFF")
+    plt.suptitle("Dinamika Konvergensi Validation MSE & Early Stopping (Patience=40) Seluruh Kombinasi ROA",
+                 fontsize=13, fontweight="bold", y=1.03)
+    plt.tight_layout()
+    plt.savefig("roa_grid_convergence_curves.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    print("[+] Kurva konvergensi 8 kombinasi ROA berhasil disimpan ke roa_grid_convergence_curves.png.")
+
+def export_experimental_grid_csv(results_compare, tickers):
+    exp_rows = []
+    bp_rows = []
+    for ticker in tickers:
+        for e in results_compare[ticker].get("experiments", []):
+            exp_rows.append({
+                "Ticker": ticker,
+                "Population_N": e["N"],
+                "Max_Iter_T": e["T"],
+                "Bounds": f"[{e['bounds'][0]}, {e['bounds'][1]}]",
+                "Stop_Iteration": e["stop_iter"],
+                "Early_Stopped": e["early_stopped"],
+                "Best_Val_MSE": e["best_val_mse"],
+                "Test_RMSE": e["metrics"]["RMSE"],
+                "Test_MAE": e["metrics"]["MAE"],
+                "Test_MAPE (%)": e["metrics"]["MAPE"],
+                "Test_R2": e["metrics"]["R2"],
+                "Training_Time_Sec": e["time"]
+            })
+        for b in results_compare[ticker].get("bp_experiments", []):
+            bp_rows.append({
+                "Ticker": ticker,
+                "Epochs": b["epochs"],
+                "Final_Val_MSE": b["final_val_mse"],
+                "Test_RMSE": b["metrics"]["RMSE"],
+                "Test_MAE": b["metrics"]["MAE"],
+                "Test_MAPE (%)": b["metrics"]["MAPE"],
+                "Test_R2": b["metrics"]["R2"],
+                "Training_Time_Sec": b["time"]
+            })
+    if exp_rows:
+        pd.DataFrame(exp_rows).to_csv("roa_experimental_grid_results.csv", index=False)
+        print("[+] Rekap eksperimen grid ROA diekspor ke roa_experimental_grid_results.csv.")
+    if bp_rows:
+        pd.DataFrame(bp_rows).to_csv("bp_experimental_results.csv", index=False)
+        print("[+] Rekap eksperimen variasi epoch BP diekspor ke bp_experimental_results.csv.")
+
 if __name__ == "__main__":
     tickers_to_test = ["NVDA", "BBCA.JK", "TSLA"]
     results_compare = {}
@@ -644,4 +897,7 @@ if __name__ == "__main__":
         results_compare[ticker] = run_comparative_pipeline(ticker)
 
     generate_comparative_plots(results_compare, tickers_to_test)
+    plot_experimental_grid(results_compare, tickers_to_test)
+    plot_variations_analysis(results_compare, tickers_to_test)
     export_research_data_to_csv(results_compare, tickers_to_test)
+    export_experimental_grid_csv(results_compare, tickers_to_test)
