@@ -29,7 +29,7 @@ class RemoraOptimizationAlgorithm:
     Algoritma Metaheuristik Remora Optimization Algorithm (ROA) dengan parameter konsisten:
     N = 150, Max Iter = 200, Bounds = [-1.0, 1.0], Seed = 67.
     """
-    def __init__(self, cost_function, dim, n_agents=150, max_iter=200,
+    def __init__(self, cost_function, dim, n_agents=100, max_iter=100,
                  lower_bound=-1.0, upper_bound=1.0, seed=67, C=0.1, patience=40):
         self.cost_function = cost_function
         self.dim = dim
@@ -241,7 +241,7 @@ def create_roa_cost(X, y):
 
 create_po_cost = create_roa_cost
 
-def roa_optimize(X_train, y_train, X_val, y_val, N=150, T=200, bounds=(-1.0, 1.0), seed=67, patience=40):
+def roa_optimize(X_train, y_train, X_val, y_val, N=100, T=100, bounds=(-1.0, 1.0), seed=67, patience=40):
     train_cost = create_roa_cost(X_train, y_train)
     best_theta, best_cost, convergence_curve = run_remora_optimizer(
         n_agents=N,
@@ -262,7 +262,7 @@ po_optimize = roa_optimize
 # ==============================================================================
 # 4. BASELINE BACKPROPAGATION (Adam)
 # ==============================================================================
-def train_mlp_backprop(X_train, y_train, X_val, y_val, epochs=200, lr=0.01):
+def train_mlp_backprop(X_train, y_train, X_val, y_val, epochs=100, lr=0.01):
     X_tr_t = torch.FloatTensor(X_train.reshape(X_train.shape[0], -1))
     y_tr_t = torch.FloatTensor(y_train)
     X_val_t = torch.FloatTensor(X_val.reshape(X_val.shape[0], -1))
@@ -331,7 +331,7 @@ def run_comparative_pipeline(ticker):
 
     # 2. Backprop
     print("\n[2/2] Melatih dengan Backpropagation (Adam)...")
-    model_bp, bp_log, time_bp = train_mlp_backprop(X_tr, y_tr, X_val, y_val, epochs=200, lr=0.01)
+    model_bp, bp_log, time_bp = train_mlp_backprop(X_tr, y_tr, X_val, y_val, epochs=100, lr=0.01)
 
     # 3. Rekonstruksi Harga
     n = len(X)
